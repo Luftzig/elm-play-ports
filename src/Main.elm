@@ -262,11 +262,35 @@ update msg model =
 body : Model -> Html Msg
 body model =
     div [ class "col" ]
-        [ div [ class "row" ]
-            [ input [ Html.Events.onInput TargetNameChanged, Html.Attributes.value (String.join "." model.targetName) ] [ text "target" ]
-            , input [ Html.Events.onInput ArgChanged ] [ text "arg" ]
-            , button [ Html.Events.onClick RunButtonClicked ] [ text "Call Global" ]
-            , button [ Html.Events.onClick ListenEventClicked ] [ text "Listen To Event" ]
+        [ div [] [ text "Proof of Concept for generalised ports." ]
+        , div [ class "row" ]
+            [ div [ class "col" ]
+                [ Html.label [ Html.Attributes.for "invocation-target" ] [ text "Target Fn or Object (e.g. \"navigator.scrollTo\")" ]
+                , input
+                    [ Html.Events.onInput TargetNameChanged
+                    , Html.Attributes.value (String.join "." model.targetName)
+                    , Html.Attributes.id "invocation-target"
+                    ]
+                    [ text "target" ]
+                ]
+            , div [ class "col" ]
+                [ Html.label [ Html.Attributes.for "first-arg" ] [ text "Argument" ]
+                , input
+                    [ Html.Events.onInput ArgChanged
+                    , Html.Attributes.value
+                        (model.args
+                            |> List.head
+                            |> Maybe.map (JE.encode 0)
+                            |> Maybe.withDefault ""
+                        )
+                    , Html.Attributes.id "first-arg"
+                    ]
+                    [ text "arg" ]
+                ]
+            , div [ class "col" ]
+                [ button [ Html.Events.onClick RunButtonClicked ] [ text "Call Global" ]
+                , button [ Html.Events.onClick ListenEventClicked ] [ text "Listen To Event" ]
+                ]
             ]
         , model.results
             |> List.map (toDebugString (JE.encode 0))
