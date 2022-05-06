@@ -57,6 +57,12 @@ function runListenOn(id, cmd, args, target) {
   }
 }
 
+function foo(data) {
+  alert(data)
+  return data
+}
+window.foo = foo
+
 app.ports.runForeign_.subscribe(({ __type, id, cmd, args, target }) => {
   switch (__type) {
     case "Call":

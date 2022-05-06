@@ -277,12 +277,6 @@ body model =
                 [ Html.label [ Html.Attributes.for "first-arg" ] [ text "Argument" ]
                 , input
                     [ Html.Events.onInput ArgChanged
-                    , Html.Attributes.value
-                        (model.args
-                            |> List.head
-                            |> Maybe.map (JE.encode 0)
-                            |> Maybe.withDefault ""
-                        )
                     , Html.Attributes.id "first-arg"
                     ]
                     [ text "arg" ]
