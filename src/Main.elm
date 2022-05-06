@@ -2,7 +2,7 @@ port module Main exposing (main)
 
 import Browser exposing (Document)
 import Html exposing (Html, button, div, input, text)
-import Html.Attributes exposing (class, style)
+import Html.Attributes exposing (class)
 import Html.Events
 import Json.Decode as JD
 import Json.Encode as JE exposing (Value)
@@ -20,6 +20,7 @@ type Msg
     = TargetNameChanged String
     | ArgChanged String
     | RunButtonClicked
+    | ListenEventClicked
     | FunctionInvoked (FfiResult JD.Value)
 
 
@@ -27,12 +28,61 @@ type alias FfiId =
     String
 
 
+type ForeignFunctionInvocation
+    = Call { id : FfiId, cmd : List String, args : List JE.Value }
+    | New { id : FfiId, cmd : List String, args : List JE.Value }
+    | Create { id : FfiId, cmd : List String, args : List JE.Value }
+    | InvokeOn { target : FfiId, id : FfiId, cmd : List String, args : List JE.Value }
+    | ListenOn { target : FfiId, id : FfiId, cmd : List String, args : List JE.Value }
+
+
+encodeInvocation : ForeignFunctionInvocation -> JE.Value
+encodeInvocation foreignFunctionInvocation =
+    case foreignFunctionInvocation of
+        Call record ->
+            JE.object <| ( "__type", JE.string "Call" ) :: encodeCall record
+
+        New record ->
+            JE.object <| ( "__type", JE.string "New" ) :: encodeCall record
+
+        Create record ->
+            JE.object <| ( "__type", JE.string "Create" ) :: encodeCall record
+
+        InvokeOn record ->
+            JE.object <| ( "__type", JE.string "InvokeOn" ) :: encodeMethodCall record
+
+        ListenOn record ->
+            JE.object <| ( "__type", JE.string "ListenOn" ) :: encodeMethodCall record
+
+
+encodeCall : { id : FfiId, cmd : List String, args : List Value } -> List ( String, Value )
+encodeCall record =
+    [ ( "id", JE.string record.id )
+    , ( "cmd", JE.list JE.string record.cmd )
+    , ( "args", JE.list identity record.args )
+    ]
+
+
+encodeMethodCall : { target : FfiId, id : FfiId, cmd : List String, args : List Value } -> List ( String, Value )
+encodeMethodCall record =
+    [ ( "target", JE.string record.target )
+    , ( "id", JE.string record.id )
+    , ( "cmd", JE.list JE.string record.cmd )
+    , ( "args", JE.list identity record.args )
+    ]
+
+
+runForeign : ForeignFunctionInvocation -> Cmd msg
+runForeign ffi =
+    runForeign_ (encodeInvocation ffi)
+
+
 {-| run a javascript function for it's side effects.
 id can be used to listen to whether the function was called
 cmd is a path identifier for the function from the Window object.
 args is a list of any serializable values, given to the function as arguments.
 -}
-port runForeign : { id : FfiId, cmd : List String, args : List JE.Value } -> Cmd msg
+port runForeign_ : JE.Value -> Cmd msg
 
 
 {-| Listen to results from foreign function invocations
@@ -185,23 +235,38 @@ update msg model =
         RunButtonClicked ->
             ( { model | commandCounter = model.commandCounter + 1 }
             , runForeign
-                { id = String.join "." model.targetName ++ "#" ++ String.fromInt model.commandCounter
-                , cmd = model.targetName
-                , args = model.args
-                }
+                (Call
+                    { id = String.join "." model.targetName ++ "#" ++ String.fromInt model.commandCounter
+                    , cmd = model.targetName
+                    , args = model.args
+                    }
+                )
             )
 
         FunctionInvoked ffiResult ->
             ( { model | results = ffiResult :: model.results }, Cmd.none )
+
+        ListenEventClicked ->
+            ( { model | commandCounter = model.commandCounter + 1 }
+            , runForeign
+                (ListenOn
+                    { id = String.join "." model.targetName ++ "#listenOn-" ++ String.fromInt model.commandCounter
+                    , cmd = model.targetName
+                    , args = model.args
+                    , target = ""
+                    }
+                )
+            )
 
 
 body : Model -> Html Msg
 body model =
     div [ class "col" ]
         [ div [ class "row" ]
-            [ input [ Html.Events.onInput TargetNameChanged ] [ text "target" ]
+            [ input [ Html.Events.onInput TargetNameChanged, Html.Attributes.value (String.join "." model.targetName) ] [ text "target" ]
             , input [ Html.Events.onInput ArgChanged ] [ text "arg" ]
-            , button [ Html.Events.onClick RunButtonClicked ] [ text "Run" ]
+            , button [ Html.Events.onClick RunButtonClicked ] [ text "Call Global" ]
+            , button [ Html.Events.onClick ListenEventClicked ] [ text "Listen To Event" ]
             ]
         , model.results
             |> List.map (toDebugString (JE.encode 0))

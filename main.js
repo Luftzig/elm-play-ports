@@ -7,23 +7,67 @@ const app = Elm.Main.init({ node: root });
 const getPath = (path, start) =>
   path.reduce((cur, seg) => cur != null ? cur[seg] : undefined, start)
 
-app.ports.runForeign.subscribe(({ id, cmd, args }) => {
+function reportException(id, err, cmd, args) {
+  return app.ports.foreignResult_.send([id, {__type: "Exception", exception: err.toString(), cmd, args}])
+}
+
+function reportSuccess(id, res) {
+  return app.ports.foreignResult_.send([id, {__type: "Ok", value: res}])
+}
+
+function reportNotFound(id, cmd) {
+  app.ports.foreignResult_.send([id, {__type: "NotFound", cmd: cmd}])
+}
+
+function runGlobalCall(cmd, args, id) {
   const candidate = getPath(cmd, window ?? global)
+  const parent = getPath(cmd.slice(0, -1), window ?? global)
   if (typeof candidate === "function") {
     try {
-      const result = candidate.apply(null, args)
+      const result = candidate.apply(parent, args)
       if (result != null && typeof result["then"] === "function") {
-        result.then(res => app.ports.foreignResult_.send([id, {__type: "Ok", value: res}]))
+        result.then(res => reportSuccess(id, res))
           .catch(err =>
-            app.ports.foreignResult_.send([id, {__type: "Exception", exception: err.toString(), cmd, args}])
+            reportException(id, err, cmd, args)
           )
       } else {
-        app.ports.foreignResult_.send([id, {__type: "Ok", value: result}])
+        reportSuccess(id, result)
       }
     } catch (err) {
-      app.ports.foreignResult_.send([id, {__type: "Exception", exception: err.toString(), cmd, args}])
+      reportException(id, err, cmd, args)
     }
   } else {
-    app.ports.foreignResult_.send([id, {__type: "NotFound", cmd: cmd}])
+    reportNotFound(id, cmd)
+  }
+}
+
+function runListenOn(id, cmd, args, target) {
+  if (target !== "") {
+    // TODO: Handle target
+  }
+  const cb = (event) => reportSuccess(id, event)
+  const candidate = getPath(cmd, window ?? global)
+  const parent = getPath(cmd.slice(0, -1), window ?? global)
+  if (typeof candidate === "function") {
+    candidate.call(parent, cb, ...args)
+  } else if (candidate != null && typeof candidate["addEventListener"] === "function") {
+    candidate.addEventListener(args[0], cb, args[1])
+  } else {
+    reportNotFound(id, cmd)
+  }
+}
+
+app.ports.runForeign_.subscribe(({ __type, id, cmd, args, target }) => {
+  switch (__type) {
+    case "Call":
+      return runGlobalCall(cmd, args, id)
+    case "New":
+      return console.warn("New not implemented")
+    case "Create":
+      return console.warn("Create not implemented")
+    case "InvokeOn":
+      return console.warn("InvokeON not implemented")
+    case "ListenOn":
+      return runListenOn(id, cmd, args, target)
   }
 })
