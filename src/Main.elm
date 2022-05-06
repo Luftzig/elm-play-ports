@@ -2,13 +2,17 @@ port module Main exposing (main)
 
 import Browser exposing (Document)
 import Html exposing (Html, button, div, input, text)
+import Html.Attributes exposing (class, style)
 import Html.Events
-import Json.Encode exposing (Value)
+import Json.Decode as JD
+import Json.Encode as JE exposing (Value)
 
 
 type alias Model =
     { targetName : List String
-    , args : List Json.Encode.Value
+    , args : List JE.Value
+    , commandCounter : Int
+    , results : List (FfiResult JD.Value)
     }
 
 
@@ -16,9 +20,128 @@ type Msg
     = TargetNameChanged String
     | ArgChanged String
     | RunButtonClicked
+    | FunctionInvoked (FfiResult JD.Value)
 
 
-port runForeign : ( List String, List Json.Encode.Value ) -> Cmd msg
+type alias FfiId =
+    String
+
+
+{-| run a javascript function for it's side effects.
+id can be used to listen to whether the function was called
+cmd is a path identifier for the function from the Window object.
+args is a list of any serializable values, given to the function as arguments.
+-}
+port runForeign : { id : FfiId, cmd : List String, args : List JE.Value } -> Cmd msg
+
+
+{-| Listen to results from foreign function invocations
+JS side should return one of:
+
+  - `[ id, { __type: "Ok", value: v } ]`
+
+  - `[ id, { __type: "NotFound", cmd: array } ]`
+
+  - `[ id, { __type: "Exception", "exception": msg, cmd: array, args: args } ]`
+
+    where id is a correlation ID used when requesting invocation
+    v is a value that needs to be decoded by the user
+    msg is the exception message
+
+-}
+port foreignResult_ : (( FfiId, JD.Value ) -> msg) -> Sub msg
+
+
+type FfiResult a
+    = Success FfiId a
+    | SuccessNoValue FfiId
+    | NotFound FfiId (List String)
+    | ExceptionThrown FfiId { message : String, cmd : List String, args : List JE.Value }
+    | DecodingFailed FfiId JD.Error
+
+
+toDebugString : (a -> String) -> FfiResult a -> String
+toDebugString aToStr res =
+    case res of
+        Success ffiId a ->
+            "Success (" ++ ffiId ++ "): " ++ aToStr a
+
+        SuccessNoValue ffiId ->
+            "Success (" ++ ffiId ++ ") <void>"
+
+        NotFound ffiId strings ->
+            "NotFound (" ++ ffiId ++ "): " ++ String.join "." strings
+
+        ExceptionThrown ffiId { message, cmd, args } ->
+            "ExceptionThrown ("
+                ++ ffiId
+                ++ "): "
+                ++ message
+                ++ "\n in Invocation: "
+                ++ String.join "." cmd
+                ++ "("
+                ++ (args |> List.map (JE.encode 0) |> String.join ", ")
+                ++ ")"
+
+        DecodingFailed ffiId error ->
+            "DecodingFailed (" ++ ffiId ++ "): " ++ JD.errorToString error
+
+
+foreignResult : JD.Decoder a -> (FfiResult a -> msg) -> Sub msg
+foreignResult decoder toMessage =
+    let
+        resultDecoder : FfiId -> JD.Decoder (FfiResult a)
+        resultDecoder id =
+            JD.field "__type" JD.string
+                |> JD.andThen
+                    (\type_ ->
+                        case type_ of
+                            "Ok" ->
+                                JD.field "value" (JD.nullable decoder)
+                                    |> JD.andThen
+                                        (\v ->
+                                            case v of
+                                                Just some ->
+                                                    JD.succeed (Success id some)
+
+                                                Nothing ->
+                                                    JD.succeed (SuccessNoValue id)
+                                        )
+
+                            "NotFound" ->
+                                JD.field "cmd" (JD.list JD.string)
+                                    |> JD.andThen
+                                        (\cmd ->
+                                            JD.succeed (NotFound id cmd)
+                                        )
+
+                            "Exception" ->
+                                JD.map3 (\exc cmd args -> ExceptionThrown id { message = exc, cmd = cmd, args = args })
+                                    (JD.field "exception" JD.string)
+                                    (JD.field "cmd" (JD.list JD.string))
+                                    (JD.field "args" (JD.list JD.value))
+
+                            _ ->
+                                JD.fail ("Unknown __type '" ++ type_ ++ "'")
+                    )
+
+        decodeResult : FfiId -> JD.Value -> FfiResult a
+        decodeResult id value =
+            let
+                result =
+                    JD.decodeValue (resultDecoder id) value
+            in
+            case result of
+                Ok decoded ->
+                    decoded
+
+                Err jdErr ->
+                    DecodingFailed id jdErr
+    in
+    foreignResult_
+        (\( id, value ) ->
+            decodeResult id value |> toMessage
+        )
 
 
 main =
@@ -27,6 +150,8 @@ main =
             \() ->
                 ( { targetName = []
                   , args = []
+                  , commandCounter = 0
+                  , results = []
                   }
                 , Cmd.none
                 )
@@ -45,7 +170,7 @@ view model =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.none
+    foreignResult JD.value FunctionInvoked
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -55,16 +180,31 @@ update msg model =
             ( { model | targetName = String.split "." string }, Cmd.none )
 
         ArgChanged string ->
-            ( { model | args = [ Json.Encode.string string ] }, Cmd.none )
+            ( { model | args = [ JE.string string ] }, Cmd.none )
 
         RunButtonClicked ->
-            ( model, runForeign ( model.targetName, model.args ) )
+            ( { model | commandCounter = model.commandCounter + 1 }
+            , runForeign
+                { id = String.join "." model.targetName ++ "#" ++ String.fromInt model.commandCounter
+                , cmd = model.targetName
+                , args = model.args
+                }
+            )
+
+        FunctionInvoked ffiResult ->
+            ( { model | results = ffiResult :: model.results }, Cmd.none )
 
 
 body : Model -> Html Msg
 body model =
-    div []
-        [ input [ Html.Events.onInput TargetNameChanged ] [ text "target" ]
-        , input [ Html.Events.onInput ArgChanged ] [ text "arg" ]
-        , button [ Html.Events.onClick RunButtonClicked ] [ text "Run" ]
+    div [ class "col" ]
+        [ div [ class "row" ]
+            [ input [ Html.Events.onInput TargetNameChanged ] [ text "target" ]
+            , input [ Html.Events.onInput ArgChanged ] [ text "arg" ]
+            , button [ Html.Events.onClick RunButtonClicked ] [ text "Run" ]
+            ]
+        , model.results
+            |> List.map (toDebugString (JE.encode 0))
+            |> List.map (\s -> div [ class "result" ] [ text s ])
+            |> div [ class "col" ]
         ]
